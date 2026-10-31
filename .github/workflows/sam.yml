@@ -179,7 +179,7 @@ jobs:
       - name: Validar configuracao do deploy
         if: inputs.action == 'deploy'
         env:
-          DATABASE_URL: ${{ vars.DATABASE_URL }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
@@ -190,7 +190,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          : "${DATABASE_URL:?Organization Variable DATABASE_URL nao definida}"
+          : "${DATABASE_HOST:?Organization Variable DATABASE_HOST nao definida}"
           : "${LAMBDA_SECURITY_GROUP_ID:?Organization Variable LAMBDA_SECURITY_GROUP_ID nao definida}"
           : "${LAMBDA_SUBNET_IDS:?Organization Variable LAMBDA_SUBNET_IDS nao definida}"
           : "${JWT_ISSUER:?Organization Variable JWT_ISSUER nao definida}"
@@ -199,8 +199,8 @@ jobs:
           : "${DB_PASSWORD:?Organization Secret DB_PASSWORD nao definido}"
           : "${JWT_SECRET:?Organization Secret JWT_SECRET nao definido}"
 
-          if [[ ! "$DATABASE_URL" =~ ^jdbc:postgresql://[^/]+:[0-9]+/[^/]+$ ]]; then
-            echo "::error::DATABASE_URL deve usar jdbc:postgresql://host:porta/banco"
+          if [[ ! "DATABASE_HOST" =~ ^jdbc:postgresql://[^/]+:[0-9]+/[^/]+$ ]]; then
+            echo "::error::DATABASE_HOST deve usar jdbc:postgresql://host:porta/banco"
             exit 1
           fi
 
@@ -234,7 +234,7 @@ jobs:
       - name: Deploy Lambda
         if: inputs.action == 'deploy'
         env:
-          DATABASE_URL: ${{ vars.DATABASE_URL }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
@@ -258,7 +258,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
-              DBURL="$DATABASE_URL" \
+              DBURL="$DATABASE_HOST" \
               DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
               JWTSecret="$JWT_SECRET" \
