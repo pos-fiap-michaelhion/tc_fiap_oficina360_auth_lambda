@@ -48,6 +48,21 @@ jobs:
       - name: Setup AWS SAM
         uses: aws-actions/setup-sam@v2
 
+      - name: Validar Secrets AWS
+        if: inputs.action == 'deploy' || inputs.action == 'destroy'
+        env:
+          ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          : "${ACCESS_KEY:?AWS_ACCESS_KEY_ID nao disponivel}"
+          : "${SECRET_KEY:?AWS_SECRET_ACCESS_KEY nao disponivel}"
+          : "${SESSION_TOKEN:?AWS_SESSION_TOKEN nao disponivel}"
+
+          echo "Organization Secrets AWS disponiveis."
+
       - name: Configurar credenciais AWS
         if: inputs.action == 'deploy' || inputs.action == 'destroy'
         uses: aws-actions/configure-aws-credentials@v5
@@ -59,6 +74,8 @@ jobs:
 
       - name: Validar identidade AWS
         if: inputs.action == 'deploy' || inputs.action == 'destroy'
+        env:
+          CONFIGURED_BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
         run: |
           set -euo pipefail
 
@@ -70,7 +87,12 @@ jobs:
 
           : "${ACCOUNT_ID:?Conta AWS nao identificada}"
 
-          SAM_ARTIFACTS_BUCKET="oficina360-sam-${ACCOUNT_ID}-${AWS_REGION}"
+          if [[ -n "$CONFIGURED_BUCKET" ]]; then
+            SAM_ARTIFACTS_BUCKET="$CONFIGURED_BUCKET"
+          else
+            SAM_ARTIFACTS_BUCKET="oficina360-sam-${ACCOUNT_ID}-${AWS_REGION}"
+          fi
+
           SAM_ARTIFACTS_PREFIX="sam/${STACK_NAME}"
 
           echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> "$GITHUB_ENV"
@@ -83,11 +105,23 @@ jobs:
 
       - name: Validar template SAM
         if: inputs.action != 'destroy'
-        run: sam validate --lint
+        run: |
+          set -euo pipefail
+          sam validate --lint --template-file template.yaml
+
+      - name: Executar testes Maven
+        if: inputs.action != 'destroy'
+        run: |
+          set -euo pipefail
+          mvn --batch-mode test
 
       - name: Build Lambda
         if: inputs.action != 'destroy'
-        run: sam build
+        run: |
+          set -euo pipefail
+          rm -rf .aws-sam
+          sam build --template-file template.yaml
+          test -s .aws-sam/build/template.yaml
 
       - name: Preparar bucket de artefatos SAM
         if: inputs.action == 'deploy'
@@ -103,7 +137,7 @@ jobs:
 
             echo "Bucket SAM existente: $SAM_ARTIFACTS_BUCKET"
           else
-            echo "Bucket SAM ausente ou inacessivel. Tentando criar..."
+            echo "Bucket SAM ausente. Tentando criar $SAM_ARTIFACTS_BUCKET..."
 
             if [[ "$AWS_REGION" == "us-east-1" ]]; then
               aws s3api create-bucket \
@@ -140,40 +174,33 @@ jobs:
             --key "$TEST_KEY" \
             >/dev/null
 
-          echo "Bucket SAM criado/validado com escrita e exclusao."
+          echo "Bucket SAM validado com escrita e exclusao."
 
-      - name: Deploy Lambda
+      - name: Validar configuracao do deploy
         if: inputs.action == 'deploy'
         env:
-          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
-          DATABASE_PORT: ${{ vars.DATABASE_PORT || '5432' }}
-          DATABASE_NAME: ${{ vars.DATABASE_NAME || 'oficina360' }}
+          DATABASE_URL: ${{ vars.DATABASE_URL }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
+          JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
+          JWT_EXPIRATION: ${{ vars.JWT_EXPIRATION || '3600' }}
           DB_USERNAME: ${{ secrets.DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           set -euo pipefail
 
-          : "${DATABASE_HOST:?Repository Variable DATABASE_HOST nao definida}"
-          : "${DATABASE_PORT:?Repository Variable DATABASE_PORT nao definida}"
-          : "${DATABASE_NAME:?Repository Variable DATABASE_NAME nao definida}"
-          : "${LAMBDA_SECURITY_GROUP_ID:?Repository Variable LAMBDA_SECURITY_GROUP_ID nao definida}"
-          : "${LAMBDA_SUBNET_IDS:?Repository Variable LAMBDA_SUBNET_IDS nao definida}"
-          : "${DB_USERNAME:?GitHub Secret DB_USERNAME nao definido}"
-          : "${DB_PASSWORD:?GitHub Secret DB_PASSWORD nao definido}"
-          : "${JWT_SECRET:?GitHub Secret JWT_SECRET nao definido}"
-          : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao preparado}"
-          : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao preparado}"
+          : "${DATABASE_URL:?Organization Variable DATABASE_URL nao definida}"
+          : "${LAMBDA_SECURITY_GROUP_ID:?Organization Variable LAMBDA_SECURITY_GROUP_ID nao definida}"
+          : "${LAMBDA_SUBNET_IDS:?Organization Variable LAMBDA_SUBNET_IDS nao definida}"
+          : "${JWT_ISSUER:?Organization Variable JWT_ISSUER nao definida}"
+          : "${JWT_EXPIRATION:?Organization Variable JWT_EXPIRATION nao definida}"
+          : "${DB_USERNAME:?Organization Secret DB_USERNAME nao definido}"
+          : "${DB_PASSWORD:?Organization Secret DB_PASSWORD nao definido}"
+          : "${JWT_SECRET:?Organization Secret JWT_SECRET nao definido}"
 
-          if [[ ! "$DATABASE_HOST" =~ \.rds\.amazonaws\.com$ ]]; then
-            echo "::error::DATABASE_HOST nao parece ser um endpoint RDS valido."
-            exit 1
-          fi
-
-          if [[ ! "$DATABASE_PORT" =~ ^[0-9]+$ ]]; then
-            echo "::error::DATABASE_PORT deve ser numerica."
+          if [[ ! "$DATABASE_URL" =~ ^jdbc:postgresql://[^/]+:[0-9]+/[^/]+$ ]]; then
+            echo "::error::DATABASE_URL deve usar jdbc:postgresql://host:porta/banco"
             exit 1
           fi
 
@@ -187,12 +214,39 @@ jobs:
             exit 1
           fi
 
-          echo "Database host: $DATABASE_HOST"
-          echo "Database port: $DATABASE_PORT"
-          echo "Database name: $DATABASE_NAME"
+          if [[ ! "$JWT_EXPIRATION" =~ ^[0-9]+$ ]]; then
+            echo "::error::JWT_EXPIRATION deve conter apenas numeros."
+            exit 1
+          fi
+
+          if (( ${#JWT_SECRET} < 32 )); then
+            echo "::error::JWT_SECRET deve possuir pelo menos 32 caracteres."
+            exit 1
+          fi
+
+          echo "Configuracao do deploy validada."
+          echo "Database URL configurada."
           echo "Security Group: $LAMBDA_SECURITY_GROUP_ID"
           echo "Subnets: $LAMBDA_SUBNET_IDS"
-          echo "Bucket de artefatos: $SAM_ARTIFACTS_BUCKET"
+          echo "JWT issuer: $JWT_ISSUER"
+          echo "JWT expiration: $JWT_EXPIRATION"
+
+      - name: Deploy Lambda
+        if: inputs.action == 'deploy'
+        env:
+          DATABASE_URL: ${{ vars.DATABASE_URL }}
+          LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
+          LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
+          JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
+          JWT_EXPIRATION: ${{ vars.JWT_EXPIRATION || '3600' }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          set -euo pipefail
+
+          : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao preparado}"
+          : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao preparado}"
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -204,15 +258,13 @@ jobs:
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
-              DatabaseHost="$DATABASE_HOST" \
-              DatabasePort="$DATABASE_PORT" \
-              DatabaseName="$DATABASE_NAME" \
-              DatabaseUsername="$DB_USERNAME" \
-              DatabasePassword="$DB_PASSWORD" \
-              JwtSecret="$JWT_SECRET" \
-              JwtIssuer="oficina360-auth" \
-              JwtExpiration="3600" \
-              LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
+              DBURL="$DATABASE_URL" \
+              DBUsername="$DB_USERNAME" \
+              DBPassword="$DB_PASSWORD" \
+              JWTSecret="$JWT_SECRET" \
+              JWTIssuer="$JWT_ISSUER" \
+              JWTExpiration="$JWT_EXPIRATION" \
+              DatabaseAccessSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaSubnetIds="$LAMBDA_SUBNET_IDS"
 
       - name: Obter URL da API
@@ -239,6 +291,8 @@ jobs:
       - name: Mostrar outputs
         if: inputs.action == 'deploy'
         run: |
+          set -euo pipefail
+
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
@@ -248,6 +302,8 @@ jobs:
       - name: Gerar resumo do deploy
         if: inputs.action == 'deploy'
         run: |
+          set -euo pipefail
+
           {
             echo "STACK_NAME=$STACK_NAME"
             echo "AUTH_API_URL=$AUTH_API_URL"
@@ -282,11 +338,13 @@ jobs:
             aws cloudformation wait stack-delete-complete \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION"
+
+            echo "Stack $STACK_NAME removida."
           else
             echo "Stack $STACK_NAME nao existe."
           fi
 
-      - name: Limpar bucket SAM
+      - name: Limpar artefatos SAM
         if: inputs.action == 'destroy'
         run: |
           set -euo pipefail
@@ -303,22 +361,7 @@ jobs:
             "s3://${SAM_ARTIFACTS_BUCKET}/${SAM_ARTIFACTS_PREFIX}/" \
             --recursive || true
 
-          REMAINING_OBJECTS="$(
-            aws s3api list-objects-v2 \
-              --bucket "$SAM_ARTIFACTS_BUCKET" \
-              --query 'KeyCount' \
-              --output text
-          )"
-
-          if [[ "$REMAINING_OBJECTS" == "0" ]]; then
-            aws s3api delete-bucket \
-              --bucket "$SAM_ARTIFACTS_BUCKET" \
-              --region "$AWS_REGION"
-
-            echo "Bucket SAM vazio removido."
-          else
-            echo "Bucket SAM possui outros objetos e foi preservado."
-          fi
+          echo "Prefixo SAM removido. O bucket foi preservado para o proximo deploy."
 
       - name: Gerar diagnostico
         if: failure() && (inputs.action == 'deploy' || inputs.action == 'destroy')
@@ -346,9 +389,6 @@ jobs:
             echo "prefix=${SAM_ARTIFACTS_PREFIX:-nao-calculado}"
 
             if [[ -n "${SAM_ARTIFACTS_BUCKET:-}" ]]; then
-              aws s3api get-bucket-location \
-                --bucket "$SAM_ARTIFACTS_BUCKET" || true
-
               aws s3api list-objects-v2 \
                 --bucket "$SAM_ARTIFACTS_BUCKET" \
                 --prefix "${SAM_ARTIFACTS_PREFIX:-}" \
