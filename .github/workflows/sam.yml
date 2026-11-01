@@ -56,9 +56,11 @@ jobs:
           SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         run: |
           set -euo pipefail
+
           : "${ACCESS_KEY:?AWS_ACCESS_KEY_ID nao disponivel}"
           : "${SECRET_KEY:?AWS_SECRET_ACCESS_KEY nao disponivel}"
           : "${SESSION_TOKEN:?AWS_SESSION_TOKEN nao disponivel}"
+
           echo "Secrets AWS disponiveis."
 
       - name: Configurar credenciais AWS
@@ -70,31 +72,36 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Validar identidade AWS
+      - name: Resolver identidade AWS e bucket SAM com seguranca
         if: inputs.action == 'deploy' || inputs.action == 'destroy'
-        env:
-          CONFIGURED_BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
         run: |
           set -euo pipefail
 
-          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          IDENTITY_JSON="$(aws sts get-caller-identity --output json)"
+          ACCOUNT_ID="$(jq -r '.Account' <<< "$IDENTITY_JSON")"
+          CALLER_ARN="$(jq -r '.Arn' <<< "$IDENTITY_JSON")"
+          USER_ID="$(jq -r '.UserId' <<< "$IDENTITY_JSON")"
+
           : "${ACCOUNT_ID:?Conta AWS nao identificada}"
+          : "${CALLER_ARN:?Caller ARN nao identificado}"
+          : "${USER_ID:?User ID nao identificado}"
 
-          if [[ -n "$CONFIGURED_BUCKET" ]]; then
-            SAM_ARTIFACTS_BUCKET="$CONFIGURED_BUCKET"
-          else
-            SAM_ARTIFACTS_BUCKET="oficina360-sam-${ACCOUNT_ID}-${AWS_REGION}"
-          fi
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "::add-mask::$CALLER_ARN"
+          echo "::add-mask::$USER_ID"
+          echo "::add-mask::${CALLER_ARN##*/}"
 
+          SAM_ARTIFACTS_BUCKET="oficina360-sam-${ACCOUNT_ID}-${AWS_REGION}"
           SAM_ARTIFACTS_PREFIX="sam/${STACK_NAME}"
 
-          echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> "$GITHUB_ENV"
+          echo "::add-mask::$SAM_ARTIFACTS_BUCKET"
+          echo "::add-mask::$SAM_ARTIFACTS_PREFIX"
+
           echo "SAM_ARTIFACTS_BUCKET=$SAM_ARTIFACTS_BUCKET" >> "$GITHUB_ENV"
           echo "SAM_ARTIFACTS_PREFIX=$SAM_ARTIFACTS_PREFIX" >> "$GITHUB_ENV"
 
-          echo "Conta AWS: $ACCOUNT_ID"
-          echo "Bucket SAM: $SAM_ARTIFACTS_BUCKET"
-          echo "Prefixo SAM: $SAM_ARTIFACTS_PREFIX"
+          echo "Identidade AWS validada."
+          echo "Bucket de artefatos SAM resolvido."
 
       - name: Validar template SAM
         if: inputs.action != 'destroy'
@@ -120,6 +127,7 @@ jobs:
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
+
           : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao calculado}"
           : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao calculado}"
 
@@ -133,11 +141,13 @@ jobs:
           aws s3api put-object \
             --bucket "$SAM_ARTIFACTS_BUCKET" \
             --key "$TEST_KEY" \
-            --body "$TEST_FILE" >/dev/null
+            --body "$TEST_FILE" \
+            >/dev/null
 
           aws s3api delete-object \
             --bucket "$SAM_ARTIFACTS_BUCKET" \
-            --key "$TEST_KEY" >/dev/null
+            --key "$TEST_KEY" \
+            >/dev/null
 
           echo "Bucket SAM validado com escrita e exclusao."
 
@@ -151,15 +161,19 @@ jobs:
           set -euo pipefail
 
           if [[ -n "$RDS_SECRET_ARN" ]]; then
+            echo "::add-mask::$RDS_SECRET_ARN"
+
             SECRET_JSON="$(
               aws secretsmanager get-secret-value \
                 --secret-id "$RDS_SECRET_ARN" \
+                --region "$AWS_REGION" \
                 --query SecretString \
                 --output text
             )"
 
             DB_USERNAME="$(jq -r '.username // empty' <<< "$SECRET_JSON")"
             DB_PASSWORD="$(jq -r '.password // empty' <<< "$SECRET_JSON")"
+            unset SECRET_JSON
           else
             DB_USERNAME="$FALLBACK_DB_USERNAME"
             DB_PASSWORD="$FALLBACK_DB_PASSWORD"
@@ -170,8 +184,10 @@ jobs:
 
           echo "::add-mask::$DB_USERNAME"
           echo "::add-mask::$DB_PASSWORD"
+
           echo "DB_USERNAME=$DB_USERNAME" >> "$GITHUB_ENV"
           echo "DB_PASSWORD=$DB_PASSWORD" >> "$GITHUB_ENV"
+
           echo "Credenciais do banco resolvidas."
 
       - name: Validar configuracao do deploy
@@ -196,6 +212,15 @@ jobs:
           : "${DB_USERNAME:?DB_USERNAME nao resolvido}"
           : "${DB_PASSWORD:?DB_PASSWORD nao resolvido}"
           : "${JWT_SECRET:?JWT_SECRET nao definido}"
+
+          echo "::add-mask::$DATABASE_URL"
+          echo "::add-mask::$LAMBDA_EXECUTION_ROLE_ARN"
+          echo "::add-mask::$LAMBDA_SECURITY_GROUP_ID"
+          echo "::add-mask::$LAMBDA_SUBNET_IDS"
+          echo "::add-mask::$JWT_ISSUER"
+          echo "::add-mask::$DB_USERNAME"
+          echo "::add-mask::$DB_PASSWORD"
+          echo "::add-mask::$JWT_SECRET"
 
           if [[ ! "$LAMBDA_EXECUTION_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]; then
             echo "::error::LAMBDA_EXECUTION_ROLE_ARN possui formato invalido."
@@ -222,12 +247,16 @@ jobs:
             exit 1
           fi
 
+          IFS=',' read -r -a SUBNET_ARRAY <<< "$LAMBDA_SUBNET_IDS"
+
+          for subnet_id in "${SUBNET_ARRAY[@]}"; do
+            echo "::add-mask::$subnet_id"
+          done
+
           echo "Configuracao do deploy validada."
           echo "Database URL configurada."
-          echo "Security Group: $LAMBDA_SECURITY_GROUP_ID"
-          echo "Subnets: $LAMBDA_SUBNET_IDS"
-          echo "JWT issuer: $JWT_ISSUER"
-          echo "JWT expiration: $JWT_EXPIRATION"
+          echo "Subnets configuradas: ${#SUBNET_ARRAY[@]}"
+          echo "JWT configurado."
 
       - name: Deploy Lambda
         if: inputs.action == 'deploy'
@@ -241,10 +270,20 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           set -euo pipefail
+
           : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao preparado}"
           : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao preparado}"
           : "${DB_USERNAME:?DB_USERNAME nao resolvido}"
           : "${DB_PASSWORD:?DB_PASSWORD nao resolvido}"
+
+          echo "::add-mask::$DATABASE_URL"
+          echo "::add-mask::$LAMBDA_EXECUTION_ROLE_ARN"
+          echo "::add-mask::$LAMBDA_SECURITY_GROUP_ID"
+          echo "::add-mask::$LAMBDA_SUBNET_IDS"
+          echo "::add-mask::$JWT_ISSUER"
+          echo "::add-mask::$DB_USERNAME"
+          echo "::add-mask::$DB_PASSWORD"
+          echo "::add-mask::$JWT_SECRET"
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -266,7 +305,7 @@ jobs:
               DatabaseAccessSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaSubnetIds="$LAMBDA_SUBNET_IDS"
 
-      - name: Obter URL da API
+      - name: Validar URL da API
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
@@ -284,30 +323,38 @@ jobs:
             exit 1
           fi
 
+          echo "::add-mask::$AUTH_API_URL"
           echo "AUTH_API_URL=$AUTH_API_URL" >> "$GITHUB_ENV"
-          echo "API Gateway URL: $AUTH_API_URL"
+          echo "URL da API obtida com sucesso."
 
-      - name: Mostrar outputs
+      - name: Validar outputs da stack
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
-          aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs' \
-            --output table
 
-      - name: Gerar resumo do deploy
+          OUTPUT_COUNT="$(
+            aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query 'length(Stacks[0].Outputs)' \
+              --output text
+          )"
+
+          echo "Stack implantada."
+          echo "Outputs encontrados: $OUTPUT_COUNT"
+
+      - name: Gerar resumo sanitizado do deploy
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
+
           {
-            echo "STACK_NAME=$STACK_NAME"
-            echo "AUTH_API_URL=$AUTH_API_URL"
-            echo "AWS_REGION=$AWS_REGION"
-            echo "SAM_ARTIFACTS_BUCKET=$SAM_ARTIFACTS_BUCKET"
-            echo "SAM_ARTIFACTS_PREFIX=$SAM_ARTIFACTS_PREFIX"
-          } | tee lambda-deploy-summary.txt
+            echo "status=success"
+            echo "stack_name=$STACK_NAME"
+            echo "region=$AWS_REGION"
+            echo "api_url_resolved=true"
+            echo "artifact_bucket_resolved=true"
+          } > lambda-deploy-summary.txt
 
       - name: Publicar resumo do deploy
         if: inputs.action == 'deploy'
@@ -325,7 +372,8 @@ jobs:
 
           if aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
+            --region "$AWS_REGION" \
+            >/dev/null 2>&1; then
 
             aws cloudformation delete-stack \
               --stack-name "$STACK_NAME" \
@@ -335,9 +383,9 @@ jobs:
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION"
 
-            echo "Stack $STACK_NAME removida."
+            echo "Stack removida."
           else
-            echo "Stack $STACK_NAME nao existe."
+            echo "Stack nao existe."
           fi
 
       - name: Limpar artefatos SAM
@@ -345,41 +393,56 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! aws s3api head-bucket --bucket "$SAM_ARTIFACTS_BUCKET" >/dev/null 2>&1; then
+          if ! aws s3api head-bucket \
+            --bucket "$SAM_ARTIFACTS_BUCKET" \
+            >/dev/null 2>&1; then
+
             echo "Bucket SAM nao existe ou nao esta acessivel."
             exit 0
           fi
 
           aws s3 rm \
             "s3://${SAM_ARTIFACTS_BUCKET}/${SAM_ARTIFACTS_PREFIX}/" \
-            --recursive || true
+            --recursive \
+            >/dev/null || true
 
-          echo "Prefixo SAM removido. O bucket foi preservado."
+          echo "Artefatos SAM removidos. O bucket foi preservado."
 
-      - name: Gerar diagnostico
+      - name: Gerar diagnostico sanitizado
         if: failure() && (inputs.action == 'deploy' || inputs.action == 'destroy')
         run: |
-          {
-            echo '===== AWS IDENTITY ====='
-            aws sts get-caller-identity || true
+          set -euo pipefail
 
-            echo
-            echo '===== STACK ====='
+          STACK_STATUS="$(
             aws cloudformation describe-stacks \
               --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION" || true
+              --region "$AWS_REGION" \
+              --query 'Stacks[0].StackStatus' \
+              --output text \
+              2>/dev/null ||
+            echo "NOT_FOUND"
+          )"
 
+          {
+            echo "===== AWS SESSION ====="
+            echo "AWS credentials were configured and validated."
             echo
-            echo '===== STACK EVENTS ====='
+            echo "===== STACK STATUS ====="
+            echo "stack_status=$STACK_STATUS"
+            echo
+            echo "===== FAILED RESOURCES ====="
+
             aws cloudformation describe-stack-events \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
-              --max-items 30 || true
-
-            echo
-            echo '===== BUCKET SAM ====='
-            echo "bucket=${SAM_ARTIFACTS_BUCKET:-nao-calculado}"
-            echo "prefix=${SAM_ARTIFACTS_PREFIX:-nao-calculado}"
+              --query \
+                'StackEvents[?contains(ResourceStatus, `FAILED`)].{
+                  LogicalResource:LogicalResourceId,
+                  ResourceType:ResourceType,
+                  Status:ResourceStatus
+                }' \
+              --output table \
+              2>/dev/null || true
           } > lambda-diagnostics.txt 2>&1
 
       - name: Publicar diagnostico
