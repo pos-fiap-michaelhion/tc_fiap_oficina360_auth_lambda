@@ -1,119 +1,61 @@
-#AWSTemplateFormatVersion: "2010-09-09"
-#Transform: AWS::Serverless-2016-10-31
-#
-#Description: Lambda autenticadora da Oficina360
-#
-#Parameters:
-#  DatabaseHost:
-#    Type: String
-#    Description: Endpoint do Amazon RDS PostgreSQL
-#
-#  DatabasePort:
-#    Type: String
-#    Default: "5433"
-#
-#  DatabaseName:
-#    Type: String
-#    Default: oficina360
-#
-#  DatabaseUsername:
-#    Type: String
-#    NoEcho: true
-#
-#  DatabasePassword:
-#    Type: String
-#    NoEcho: true
-#
-#  JwtSecret:
-#    Type: String
-#    NoEcho: true
-#    MinLength: 32
-#
-#  JwtIssuer:
-#    Type: String
-#    Default: oficina360-auth
-#
-#  JwtExpiration:
-#    Type: String
-#    Default: "3600"
-#
-#  DatabaseAccessSecurityGroupId:
-#    Type: AWS::EC2::SecurityGroup::Id
-#
-#  LambdaSubnetIds:
-#    Type: List<AWS::EC2::Subnet::Id>
-#    Description: Subnets utilizadas pela Lambda
-#
-#Globals:
-#  Function:
-#    Runtime: java21
-#    Timeout: 15
-#    MemorySize: 512
-#
-#Resources:
-#  AuthFunction:
-#    Type: AWS::Serverless::Function
-#
-#    Properties:
-#      FunctionName: oficina360-auth
-#
-#      Handler: com.techchallenger.oficina360.Handler::handleRequest
-#
-#      CodeUri: .
-#
-#      VpcConfig:
-#        SecurityGroupIds:
-#          - !Ref DatabaseAccessSecurityGroupId
-#        SubnetIds: !Ref LambdaSubnetIds
-#
-#      Policies:
-#        - AWSLambdaBasicExecutionRole
-#        - AWSLambdaVPCAccessExecutionRole
-#
-#      Environment:
-#        Variables:
-#          DB_URL: !Sub
-#            - jdbc:postgresql://${Host}:${Port}/${Database}
-#            - Host: !Ref DatabaseHost
-#              Port: !Ref DatabasePort
-#              Database: !Ref DatabaseName
-#
-#          DB_USERNAME: !Ref DatabaseUsername
-#          DB_PASSWORD: !Ref DatabasePassword
-#
-#          JWT_SECRET: !Ref JwtSecret
-#          JWT_ISSUER: !Ref JwtIssuer
-#          JWT_EXPIRATION: !Ref JwtExpiration
-#
-#      Events:
-#        Auth:
-#          Type: Api
-#          Properties:
-#            Path: /auth
-#            Method: POST
-#
-#Outputs:
-#  AuthFunctionName:
-#    Description: Nome da função autenticadora
-#    Value: !Ref AuthFunction
-#
-#  AuthApiUrl:
-#    Description: URL do endpoint de autenticação
-#    Value: !Sub https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/auth
-#
-#  AuthFunctionArn:
-#    Description: ARN da função autenticadora
-#    Value: !GetAtt AuthFunction.Arn
-
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Oficina360 Authentication Lambda
 
+Parameters:
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: ARN da IAM Role existente utilizada pela Lambda
+    AllowedPattern: "^arn:aws:iam::[0-9]{12}:role/.+$"
+    ConstraintDescription: Informe um ARN valido de IAM Role.
+
+  DBURL:
+    Type: String
+    Description: URL JDBC completa do PostgreSQL
+    AllowedPattern: "^jdbc:postgresql://[^/:]+:[0-9]+/[^/?]+$"
+    ConstraintDescription: Use jdbc:postgresql://host:porta/banco.
+
+  DBUsername:
+    Type: String
+    Description: Usuario do PostgreSQL
+    NoEcho: true
+
+  DBPassword:
+    Type: String
+    Description: Senha do PostgreSQL
+    NoEcho: true
+
+  JWTSecret:
+    Type: String
+    Description: Chave usada para assinar o JWT
+    NoEcho: true
+    MinLength: 32
+
+  JWTIssuer:
+    Type: String
+    Description: Emissor do JWT
+    Default: oficina360-auth
+
+  JWTExpiration:
+    Type: String
+    Description: Expiracao do JWT em segundos
+    Default: "3600"
+    AllowedPattern: "^[0-9]+$"
+    ConstraintDescription: JWTExpiration deve conter apenas numeros.
+
+  DatabaseAccessSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group associado a Lambda para acesso ao PostgreSQL
+
+  LambdaSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets utilizadas pela Lambda
+
 Globals:
   Function:
-    Timeout: 10
-    MemorySize: 512
     Runtime: java21
+    Timeout: 15
+    MemorySize: 512
 
 Resources:
   AuthFunction:
@@ -122,19 +64,38 @@ Resources:
       FunctionName: oficina360-auth
       CodeUri: .
       Handler: com.techchallenger.oficina360.Handler::handleRequest
+      Role: !Ref LambdaExecutionRoleArn
+
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref DatabaseAccessSecurityGroupId
+        SubnetIds: !Ref LambdaSubnetIds
 
       Environment:
         Variables:
-          DB_URL: ${DB_URL}
-          DB_USERNAME: ${DB_NAME}
-          DB_PASSWORD: ${DB_PASSWORD}
-          secret: ${JWT_SECRET}
-          issue: ${JWT_ISSUER}
-          expiration: "3600"
+          DB_URL: !Ref DBURL
+          DB_USERNAME: !Ref DBUsername
+          DB_PASSWORD: !Ref DBPassword
+          secret: !Ref JWTSecret
+          issue: !Ref JWTIssuer
+          expiration: !Ref JWTExpiration
 
       Events:
         AuthApi:
           Type: Api
           Properties:
             Path: /auth
-            Method: post
+            Method: POST
+
+Outputs:
+  AuthFunctionName:
+    Description: Nome da funcao autenticadora
+    Value: !Ref AuthFunction
+
+  AuthFunctionArn:
+    Description: ARN da funcao autenticadora
+    Value: !GetAtt AuthFunction.Arn
+
+  AuthApiUrl:
+    Description: URL do endpoint de autenticacao
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/auth"
