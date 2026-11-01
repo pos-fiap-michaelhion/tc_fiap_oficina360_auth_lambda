@@ -56,12 +56,10 @@ jobs:
           SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         run: |
           set -euo pipefail
-
           : "${ACCESS_KEY:?AWS_ACCESS_KEY_ID nao disponivel}"
           : "${SECRET_KEY:?AWS_SECRET_ACCESS_KEY nao disponivel}"
           : "${SESSION_TOKEN:?AWS_SESSION_TOKEN nao disponivel}"
-
-          echo "Organization Secrets AWS disponiveis."
+          echo "Secrets AWS disponiveis."
 
       - name: Configurar credenciais AWS
         if: inputs.action == 'deploy' || inputs.action == 'destroy'
@@ -79,12 +77,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
           : "${ACCOUNT_ID:?Conta AWS nao identificada}"
 
           if [[ -n "$CONFIGURED_BUCKET" ]]; then
@@ -127,80 +120,83 @@ jobs:
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
-
           : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao calculado}"
           : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao calculado}"
 
-          if aws s3api head-bucket \
-            --bucket "$SAM_ARTIFACTS_BUCKET" \
-            >/dev/null 2>&1; then
-
-            echo "Bucket SAM existente: $SAM_ARTIFACTS_BUCKET"
-          else
-            echo "Bucket SAM ausente. Tentando criar $SAM_ARTIFACTS_BUCKET..."
-
-            if [[ "$AWS_REGION" == "us-east-1" ]]; then
-              aws s3api create-bucket \
-                --bucket "$SAM_ARTIFACTS_BUCKET" \
-                --region "$AWS_REGION"
-            else
-              aws s3api create-bucket \
-                --bucket "$SAM_ARTIFACTS_BUCKET" \
-                --region "$AWS_REGION" \
-                --create-bucket-configuration \
-                  "LocationConstraint=$AWS_REGION"
-            fi
-          fi
-
-          aws s3api put-public-access-block \
-            --bucket "$SAM_ARTIFACTS_BUCKET" \
-            --public-access-block-configuration \
-              'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true'
+          aws s3api head-bucket --bucket "$SAM_ARTIFACTS_BUCKET"
 
           TEST_FILE="$(mktemp)"
           trap 'rm -f "$TEST_FILE"' EXIT
-          printf 'sam-access-test\n' > "$TEST_FILE"
-
+          printf '%s\n' 'sam-access-test' > "$TEST_FILE"
           TEST_KEY="${SAM_ARTIFACTS_PREFIX}/access-test-${GITHUB_RUN_ID}.txt"
 
           aws s3api put-object \
             --bucket "$SAM_ARTIFACTS_BUCKET" \
             --key "$TEST_KEY" \
-            --body "$TEST_FILE" \
-            >/dev/null
+            --body "$TEST_FILE" >/dev/null
 
           aws s3api delete-object \
             --bucket "$SAM_ARTIFACTS_BUCKET" \
-            --key "$TEST_KEY" \
-            >/dev/null
+            --key "$TEST_KEY" >/dev/null
 
           echo "Bucket SAM validado com escrita e exclusao."
+
+      - name: Resolver credenciais do banco
+        if: inputs.action == 'deploy'
+        env:
+          RDS_SECRET_ARN: ${{ vars.RDS_SECRET_ARN }}
+          FALLBACK_DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          FALLBACK_DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$RDS_SECRET_ARN" ]]; then
+            SECRET_JSON="$(
+              aws secretsmanager get-secret-value \
+                --secret-id "$RDS_SECRET_ARN" \
+                --query SecretString \
+                --output text
+            )"
+
+            DB_USERNAME="$(jq -r '.username // empty' <<< "$SECRET_JSON")"
+            DB_PASSWORD="$(jq -r '.password // empty' <<< "$SECRET_JSON")"
+          else
+            DB_USERNAME="$FALLBACK_DB_USERNAME"
+            DB_PASSWORD="$FALLBACK_DB_PASSWORD"
+          fi
+
+          : "${DB_USERNAME:?Usuario do banco nao resolvido}"
+          : "${DB_PASSWORD:?Senha do banco nao resolvida}"
+
+          echo "::add-mask::$DB_USERNAME"
+          echo "::add-mask::$DB_PASSWORD"
+          echo "DB_USERNAME=$DB_USERNAME" >> "$GITHUB_ENV"
+          echo "DB_PASSWORD=$DB_PASSWORD" >> "$GITHUB_ENV"
+          echo "Credenciais do banco resolvidas."
 
       - name: Validar configuracao do deploy
         if: inputs.action == 'deploy'
         env:
-          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_URL: ${{ vars.DATABASE_URL }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
           JWT_EXPIRATION: ${{ vars.JWT_EXPIRATION || '3600' }}
-          DB_USERNAME: ${{ secrets.DB_USERNAME }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           set -euo pipefail
 
-          : "${DATABASE_HOST:?Organization Variable DATABASE_HOST nao definida}"
-          : "${LAMBDA_SECURITY_GROUP_ID:?Organization Variable LAMBDA_SECURITY_GROUP_ID nao definida}"
-          : "${LAMBDA_SUBNET_IDS:?Organization Variable LAMBDA_SUBNET_IDS nao definida}"
-          : "${JWT_ISSUER:?Organization Variable JWT_ISSUER nao definida}"
-          : "${JWT_EXPIRATION:?Organization Variable JWT_EXPIRATION nao definida}"
-          : "${DB_USERNAME:?Organization Secret DB_USERNAME nao definido}"
-          : "${DB_PASSWORD:?Organization Secret DB_PASSWORD nao definido}"
-          : "${JWT_SECRET:?Organization Secret JWT_SECRET nao definido}"
+          : "${DATABASE_URL:?Variable DATABASE_URL nao definida}"
+          : "${LAMBDA_SECURITY_GROUP_ID:?Variable LAMBDA_SECURITY_GROUP_ID nao definida}"
+          : "${LAMBDA_SUBNET_IDS:?Variable LAMBDA_SUBNET_IDS nao definida}"
+          : "${JWT_ISSUER:?JWT_ISSUER nao definida}"
+          : "${JWT_EXPIRATION:?JWT_EXPIRATION nao definida}"
+          : "${DB_USERNAME:?DB_USERNAME nao resolvido}"
+          : "${DB_PASSWORD:?DB_PASSWORD nao resolvido}"
+          : "${JWT_SECRET:?JWT_SECRET nao definido}"
 
-          if [[ ! "DATABASE_HOST" =~ ^jdbc:postgresql://[^/]+:[0-9]+/[^/]+$ ]]; then
-            echo "::error::DATABASE_HOST deve usar jdbc:postgresql://host:porta/banco"
+          if [[ ! "$DATABASE_URL" =~ ^jdbc:postgresql://[^/:]+:[0-9]+/[^/?]+$ ]]; then
+            echo "::error::DATABASE_URL deve usar jdbc:postgresql://host:porta/banco"
             exit 1
           fi
 
@@ -209,8 +205,8 @@ jobs:
             exit 1
           fi
 
-          if [[ ! "$LAMBDA_SUBNET_IDS" =~ ^subnet-[0-9a-f]+(,subnet-[0-9a-f]+)*$ ]]; then
-            echo "::error::LAMBDA_SUBNET_IDS deve usar subnet-aaa,subnet-bbb."
+          if [[ ! "$LAMBDA_SUBNET_IDS" =~ ^subnet-[0-9a-f]+(,subnet-[0-9a-f]+)+$ ]]; then
+            echo "::error::LAMBDA_SUBNET_IDS deve conter pelo menos duas subnets."
             exit 1
           fi
 
@@ -234,19 +230,18 @@ jobs:
       - name: Deploy Lambda
         if: inputs.action == 'deploy'
         env:
-          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_URL: ${{ vars.DATABASE_URL }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
           JWT_EXPIRATION: ${{ vars.JWT_EXPIRATION || '3600' }}
-          DB_USERNAME: ${{ secrets.DB_USERNAME }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           set -euo pipefail
-
           : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao preparado}"
           : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao preparado}"
+          : "${DB_USERNAME:?DB_USERNAME nao resolvido}"
+          : "${DB_PASSWORD:?DB_PASSWORD nao resolvido}"
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -258,7 +253,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
-              DBURL="$DATABASE_HOST" \
+              DBURL="$DATABASE_URL" \
               DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
               JWTSecret="$JWT_SECRET" \
@@ -292,7 +287,6 @@ jobs:
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
-
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
@@ -303,7 +297,6 @@ jobs:
         if: inputs.action == 'deploy'
         run: |
           set -euo pipefail
-
           {
             echo "STACK_NAME=$STACK_NAME"
             echo "AUTH_API_URL=$AUTH_API_URL"
@@ -328,8 +321,7 @@ jobs:
 
           if aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            >/dev/null 2>&1; then
+            --region "$AWS_REGION" >/dev/null 2>&1; then
 
             aws cloudformation delete-stack \
               --stack-name "$STACK_NAME" \
@@ -349,10 +341,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! aws s3api head-bucket \
-            --bucket "$SAM_ARTIFACTS_BUCKET" \
-            >/dev/null 2>&1; then
-
+          if ! aws s3api head-bucket --bucket "$SAM_ARTIFACTS_BUCKET" >/dev/null 2>&1; then
             echo "Bucket SAM nao existe ou nao esta acessivel."
             exit 0
           fi
@@ -361,7 +350,7 @@ jobs:
             "s3://${SAM_ARTIFACTS_BUCKET}/${SAM_ARTIFACTS_PREFIX}/" \
             --recursive || true
 
-          echo "Prefixo SAM removido. O bucket foi preservado para o proximo deploy."
+          echo "Prefixo SAM removido. O bucket foi preservado."
 
       - name: Gerar diagnostico
         if: failure() && (inputs.action == 'deploy' || inputs.action == 'destroy')
@@ -387,13 +376,6 @@ jobs:
             echo '===== BUCKET SAM ====='
             echo "bucket=${SAM_ARTIFACTS_BUCKET:-nao-calculado}"
             echo "prefix=${SAM_ARTIFACTS_PREFIX:-nao-calculado}"
-
-            if [[ -n "${SAM_ARTIFACTS_BUCKET:-}" ]]; then
-              aws s3api list-objects-v2 \
-                --bucket "$SAM_ARTIFACTS_BUCKET" \
-                --prefix "${SAM_ARTIFACTS_PREFIX:-}" \
-                --max-items 20 || true
-            fi
           } > lambda-diagnostics.txt 2>&1
 
       - name: Publicar diagnostico
