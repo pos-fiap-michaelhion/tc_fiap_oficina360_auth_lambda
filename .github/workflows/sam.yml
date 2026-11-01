@@ -131,17 +131,78 @@ jobs:
           : "${SAM_ARTIFACTS_BUCKET:?Bucket SAM nao calculado}"
           : "${SAM_ARTIFACTS_PREFIX:?Prefixo SAM nao calculado}"
 
-          aws s3api head-bucket --bucket "$SAM_ARTIFACTS_BUCKET"
+          echo "::add-mask::$SAM_ARTIFACTS_BUCKET"
+          echo "::add-mask::$SAM_ARTIFACTS_PREFIX"
 
+          HEAD_ERROR="$(mktemp)"
           TEST_FILE="$(mktemp)"
-          trap 'rm -f "$TEST_FILE"' EXIT
+
+          cleanup() {
+            rm -f "$HEAD_ERROR" "$TEST_FILE"
+          }
+
+          trap cleanup EXIT
+
+          if aws s3api head-bucket \
+            --bucket "$SAM_ARTIFACTS_BUCKET" \
+            2>"$HEAD_ERROR"; then
+
+            echo "Bucket SAM existente e acessivel."
+
+          elif grep -qiE '404|Not Found|NoSuchBucket' "$HEAD_ERROR"; then
+            echo "Bucket SAM ausente. Criando automaticamente..."
+
+            if [[ "$AWS_REGION" == "us-east-1" ]]; then
+              aws s3api create-bucket \
+                --bucket "$SAM_ARTIFACTS_BUCKET" \
+                --region "$AWS_REGION" \
+                >/dev/null
+            else
+              aws s3api create-bucket \
+                --bucket "$SAM_ARTIFACTS_BUCKET" \
+                --region "$AWS_REGION" \
+                --create-bucket-configuration \
+                  "LocationConstraint=$AWS_REGION" \
+                >/dev/null
+            fi
+
+            echo "Bucket SAM criado."
+
+          else
+            echo "::error::Bucket SAM existe ou esta reservado, mas nao esta acessivel."
+
+            grep -qiE '403|Forbidden|AccessDenied' "$HEAD_ERROR" &&
+              echo "::error::A sessao AWS nao possui acesso ao bucket."
+
+            exit 1
+          fi
+
+          aws s3api wait bucket-exists \
+            --bucket "$SAM_ARTIFACTS_BUCKET"
+
+          aws s3api put-public-access-block \
+            --bucket "$SAM_ARTIFACTS_BUCKET" \
+            --public-access-block-configuration \
+              'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true'
+
+          if ! aws s3api put-bucket-encryption \
+            --bucket "$SAM_ARTIFACTS_BUCKET" \
+            --server-side-encryption-configuration \
+              '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":false}]}' \
+            >/dev/null; then
+
+            echo "::warning::Nao foi possivel configurar explicitamente a criptografia do bucket."
+          fi
+
           printf '%s\n' 'sam-access-test' > "$TEST_FILE"
+
           TEST_KEY="${SAM_ARTIFACTS_PREFIX}/access-test-${GITHUB_RUN_ID}.txt"
 
           aws s3api put-object \
             --bucket "$SAM_ARTIFACTS_BUCKET" \
             --key "$TEST_KEY" \
             --body "$TEST_FILE" \
+            --server-side-encryption AES256 \
             >/dev/null
 
           aws s3api delete-object \
@@ -149,7 +210,7 @@ jobs:
             --key "$TEST_KEY" \
             >/dev/null
 
-          echo "Bucket SAM validado com escrita e exclusao."
+          echo "Bucket SAM preparado e validado."
 
       - name: Resolver credenciais do banco
         if: inputs.action == 'deploy'
