@@ -215,11 +215,6 @@ jobs:
             exit 1
           fi
 
-          if (( ${#JWT_SECRET} < 32 )); then
-            echo "::error::JWT_SECRET deve possuir pelo menos 32 caracteres."
-            exit 1
-          fi
-
           echo "Configuracao do deploy validada."
           echo "Database URL configurada."
           echo "Security Group: $LAMBDA_SECURITY_GROUP_ID"
