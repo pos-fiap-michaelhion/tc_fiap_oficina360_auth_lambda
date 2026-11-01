@@ -178,6 +178,7 @@ jobs:
         if: inputs.action == 'deploy'
         env:
           DATABASE_URL: ${{ vars.DATABASE_URL }}
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ vars.LAMBDA_EXECUTION_ROLE_ARN }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
@@ -187,6 +188,7 @@ jobs:
           set -euo pipefail
 
           : "${DATABASE_URL:?Variable DATABASE_URL nao definida}"
+          : "${LAMBDA_EXECUTION_ROLE_ARN:?Variable LAMBDA_EXECUTION_ROLE_ARN nao definida}"
           : "${LAMBDA_SECURITY_GROUP_ID:?Variable LAMBDA_SECURITY_GROUP_ID nao definida}"
           : "${LAMBDA_SUBNET_IDS:?Variable LAMBDA_SUBNET_IDS nao definida}"
           : "${JWT_ISSUER:?JWT_ISSUER nao definida}"
@@ -194,6 +196,11 @@ jobs:
           : "${DB_USERNAME:?DB_USERNAME nao resolvido}"
           : "${DB_PASSWORD:?DB_PASSWORD nao resolvido}"
           : "${JWT_SECRET:?JWT_SECRET nao definido}"
+
+          if [[ ! "$LAMBDA_EXECUTION_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]; then
+            echo "::error::LAMBDA_EXECUTION_ROLE_ARN possui formato invalido."
+            exit 1
+          fi
 
           if [[ ! "$DATABASE_URL" =~ ^jdbc:postgresql://[^/:]+:[0-9]+/[^/?]+$ ]]; then
             echo "::error::DATABASE_URL deve usar jdbc:postgresql://host:porta/banco"
@@ -226,6 +233,7 @@ jobs:
         if: inputs.action == 'deploy'
         env:
           DATABASE_URL: ${{ vars.DATABASE_URL }}
+          LAMBDA_EXECUTION_ROLE_ARN: ${{ vars.LAMBDA_EXECUTION_ROLE_ARN }}
           LAMBDA_SECURITY_GROUP_ID: ${{ vars.LAMBDA_SECURITY_GROUP_ID }}
           LAMBDA_SUBNET_IDS: ${{ vars.LAMBDA_SUBNET_IDS }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER || 'oficina360-auth' }}
@@ -248,6 +256,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
+              LambdaExecutionRoleArn="$LAMBDA_EXECUTION_ROLE_ARN" \
               DBURL="$DATABASE_URL" \
               DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
