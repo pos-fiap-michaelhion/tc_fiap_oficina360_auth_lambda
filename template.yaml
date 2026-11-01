@@ -77,7 +77,7 @@ Resources:
           DB_USERNAME: !Ref DBUsername
           DB_PASSWORD: !Ref DBPassword
           secret: !Ref JWTSecret
-          issue: !Ref JWTIssuer
+          JWT_ISSUER: !Ref JWTIssuer
           expiration: !Ref JWTExpiration
 
       Events:
