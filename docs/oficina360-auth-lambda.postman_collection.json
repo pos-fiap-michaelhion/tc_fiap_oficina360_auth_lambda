@@ -1,0 +1,117 @@
+{
+  "info": {
+    "name": "Oficina360 - Auth Lambda",
+    "description": "Collection para testar a autenticacao da Oficina360 localmente ou por meio do Kong Gateway.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:3000",
+      "type": "string"
+    },
+    {
+      "key": "authPath",
+      "value": "/auth",
+      "type": "string"
+    },
+    {
+      "key": "document",
+      "value": "25231015000191",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Autenticar cliente",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"document\": \"{{document}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}{{authPath}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "{{authPath}}"
+          ]
+        },
+        "description": "Para teste local use baseUrl http://127.0.0.1:3000 e authPath /auth. Para o Kong use o endereco do Load Balancer em baseUrl e /auth/auth em authPath."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status HTTP valido', function () { pm.expect(pm.response.code).to.be.oneOf([200, 400, 401, 403, 404]); });",
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  pm.test('Resposta possui token', function () { pm.expect(body).to.have.any.keys('token', 'accessToken', 'jwt'); });",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Documento invalido",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"document\": \"123\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}{{authPath}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "{{authPath}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Documento invalido foi rejeitado', function () { pm.expect(pm.response.code).to.be.oneOf([400, 401, 403, 422]); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "response": []
+    }
+  ]
+}
